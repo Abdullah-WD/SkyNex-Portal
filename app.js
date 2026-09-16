@@ -2730,7 +2730,6 @@ RENDERERS.orders = function(c){
       bindOrderLiveTotal();
       if(extraToggle) extraToggle.onchange = updateRepairChecklistVisibility;
       const showMoreToggle = document.getElementById('f_showMore');
-      if(showMoreToggle && !showMoreToggle.checked && hasExistingShowMoreData()) showMoreToggle.checked = true;
       updateShowMoreVisibility();
       if(showMoreToggle) showMoreToggle.onchange = updateShowMoreVisibility;
     },
@@ -2759,19 +2758,6 @@ function updateShowMoreVisibility(){
   SHOW_MORE_KEYS.forEach(key=>{
     const el = document.getElementById('fw_'+key);
     if(el) el.style.display = show ? '' : 'none';
-  });
-}
-function hasExistingShowMoreData(){
-  return SHOW_MORE_KEYS.some(key=>{
-    const el = document.getElementById('f_'+key);
-    if(el && String(el.value||'').trim()) return true;
-    const listEl = document.getElementById('f_'+key+'_list');
-    if(listEl && listEl.children.length) return true;
-    const dataEl = document.getElementById('f_'+key+'_data');
-    if(dataEl){
-      try{ if((JSON.parse(dataEl.value||'[]')).some(it=>it.checked)) return true; }catch(e){}
-    }
-    return false;
   });
 }
 function updateRepairChecklistVisibility(){
