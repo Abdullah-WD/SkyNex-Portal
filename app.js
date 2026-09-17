@@ -2674,19 +2674,22 @@ RENDERERS.orders = function(c){
     fields:[
       {key:'customer', label:'Customer Name', type:'combo', matchCollection:'customers', placeholder:'Type or pick a customer name', options:DB.customers.map(x=>({value:x.id,label:x.name}))},
       {key:'customerPhone', label:'Customer Phone Number', placeholder:'03XX-XXXXXXX'},
-      {key:'address', label:'Address (optional)', full:true},
-      {key:'technician', label:'Technician', placeholder:'Enter technician name'},
       {key:'bookedBy', label:'Booked By', placeholder:'Enter staff name'},
-      {key:'extraFeaturesNotes', label:'Notes (Extra Features)', type:'textarea', placeholder:'Any extra notes / special features about this device or job...'},
-      {key:'devicePhoto', label:'Device Photos (Condition)', type:'image', capture:'environment'},
-      {key:'customerPhoto', label:'Customer Picture (Security Photo)', type:'webcam', optional:true},
+      {key:'deviceCode', label:'Password / Passcode', type:'passcode', placeholder:'Enter device password / passcode', onChange:()=>updateRepairChecklistVisibility()},
+      {key:'fault', label:'Fault', type:'textarea', placeholder:'Describe the fault / issue with the device'},
+      {key:'phoneModel', label:'Phone Model', placeholder:'e.g. iPhone 13 Pro'},
+      {key:'total', label:'Estimated Cost (Rs.)', type:'number'},
+      {key:'devicePhoto', label:'Image', type:'image', capture:'environment'},
+      {key:'extraFeaturesNotes', label:'Notes', type:'textarea', placeholder:'Any extra notes / special features about this device or job...'},
       {key:'showMore', label:'Show More', type:'toggle'},
       {key:'extraInfoToggle', label:'Extra Information / Features', type:'toggle'},
+      {key:'address', label:'Address (optional)', full:true},
+      {key:'technician', label:'Technician', placeholder:'Enter technician name'},
+      {key:'customerPhoto', label:'Customer Picture (Security Photo)', type:'webcam', optional:true},
       {key:'category', label:'Repair Type', type:'select', manageKey:'repaircats', options:DB.categories.filter(x=>x.type==='Repair').map(x=>({value:x.id,label:x.name}))},
       {key:'phoneHistory', label:'Phone History', type:'textarea', placeholder:'How the issue started / how the phone died, prior repairs, usage history, etc.'},
       {key:'checkedElsewhere', label:'Checked By Someone Else Before?', type:'select', options:[{value:'No',label:'No'},{value:'Yes',label:'Yes'}]},
       {key:'devices', label:'Devices', type:'repeater', itemName:'Device', subFields:DEVICE_SUBFIELDS},
-      {key:'deviceCode', label:'Password / Passcode', type:'passcode', placeholder:'Enter device password / passcode', onChange:()=>updateRepairChecklistVisibility()},
       {key:'reportedIssues', label:'Reported Issue', type:'checklist', options:REPORTED_ISSUE_OPTS, onChange:()=>updateRepairChecklistVisibility()},
       {key:'physicalCondition', label:'Physical Condition — Check Before Opening', type:'checklist', options:PHYSICAL_CONDITION_OPTS},
       {key:'functionTest', label:'Function Test (if the phone powers on)', type:'checklist', options:FUNCTION_TEST_OPTS},
@@ -2700,19 +2703,22 @@ RENDERERS.orders = function(c){
         {key:'label', label:'Description', placeholder:'e.g. Labor / Service Charge'},
         {key:'amount', label:'Amount (Rs.)', type:'number', placeholder:'0'},
       ]},
-      {key:'total', label:'Estimated Cost — Total (Rs.)', type:'number'},
       {key:'advance', label:'Advance Payment (Rs.)', type:'number'},
       {key:'deliveryDate', label:'Estimated Delivery Date', type:'date'},
       {key:'status', label:'Status', type:'select', manageKey:'orderstatus', options:DB.lists.orderStatuses.map(s=>({value:s,label:s}))},
       {key:'repairedBy', label:'Repaired By', placeholder:'Enter name (Admin only)', adminOnly:true},
       {key:'date', label:'Received Date', type:'date', default:todayStr()},
       {key:'time', label:'Received Time', type:'time', default:nowTimeStr()},
-      {key:'notes', label:'Notes', type:'textarea'},
+      {key:'notes', label:'Notes (Internal)', type:'textarea'},
     ],
     validate:d=>{
       if(!String(d.customer||'').trim()) return 'Customer name is required';
       if(!pkPhoneValid(d.customerPhone)) return 'Enter a valid phone number as 0300-1234567 (4 digits, dash, 7 digits)';
-      if(!d.devices || !d.devices.some(dv=>dv.device && dv.device.trim())) return 'At least one device is required';
+      const hasDeviceRow = d.devices && d.devices.some(dv=>dv.device && dv.device.trim());
+      if(!hasDeviceRow){
+        if(!String(d.phoneModel||'').trim()) return 'Phone Model is required';
+        d.devices = [{device:d.phoneModel, issue:d.fault||'', cost:d.total||0}];
+      }
       return null;
     },
     afterRender:()=>{
@@ -2751,7 +2757,7 @@ function copyTrackingId(ev, code){
     done();
   }
 }
-const SHOW_MORE_KEYS = ['category','phoneHistory','checkedElsewhere','devices','deviceCode','customerConfirmation','partsUsed','serviceCharges','total','advance','deliveryDate','status','repairedBy','date','time','notes'];
+const SHOW_MORE_KEYS = ['address','technician','customerPhoto','category','phoneHistory','checkedElsewhere','devices','customerConfirmation','partsUsed','serviceCharges','advance','deliveryDate','status','repairedBy','date','time','notes'];
 function updateShowMoreVisibility(){
   const toggleEl = document.getElementById('f_showMore');
   const show = !!(toggleEl && toggleEl.checked);
