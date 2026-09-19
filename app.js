@@ -749,7 +749,7 @@ function renderField(f, val){
         <span>${f.label}</span>
       </label></div>`;
   }
-  return `<div class="field ${f.full?'full':''}" id="fw_${f.key}"><label>${f.label}${f.adminOnly?' <span class="opt-tag" title="Only Admin can edit this field">(Admin Only)</span>':''}</label><input type="${f.type||'text'}" id="${id}" value="${escapeHtml(val)}" ${f.step?`step="${f.step}"`:''} placeholder="${f.placeholder||''}" ${(f.adminOnly && !isAdmin())?'disabled':''}></div>`;
+  return `<div class="field ${f.full?'full':''}" id="fw_${f.key}"><label>${f.label}${f.adminOnly?' <span class="opt-tag" title="Only Admin can edit this field">(Admin Only)</span>':''}</label><input type="${f.type||'text'}" id="${id}" value="${escapeHtml(val)}" ${f.step?`step="${f.step}"`:''} placeholder="${f.placeholder||''}" ${f.readOnly?'readonly':''} ${(f.adminOnly && !isAdmin())?'disabled':''}></div>`;
 }
 function checklistDefaultVal(f){ return (f.options||[]).map(o=>({label:o, checked:false})); }
 function readOnlyRow(label, html){
@@ -2852,11 +2852,13 @@ async function ensureProfitLossForOrder(order, isEdit){
   const dateVal = order.date || todayStr();
   let pl = DB.profitLoss.find(p=>p.repairId===order.id);
   if(!pl){
+    const totalPayment = Number(order.total||0);
+    const advancePayment = Number(order.advance||0);
     const data = {
       repairId: order.id, customer: order.customer, phoneModel,
       date: dateVal, month: monthKey(dateVal),
-      paymentReceived: Number(order.advance||0), expense: 0,
-      profit: Number(order.advance||0), notes:'',
+      totalPayment, advancePayment, pendingPayment: Math.max(0, totalPayment-advancePayment),
+      expense: 0, profit: totalPayment, notes:'',
     };
     try{
       const created = await Api.profitLoss.create(data);
@@ -2942,10 +2944,25 @@ function ensureInvoiceForRepair(repair){
 }
 
 function plBadge(r){
-  const p = (r.profit!==undefined && r.profit!==null && r.profit!=='') ? Number(r.profit) : (Number(r.paymentReceived||0)-Number(r.expense||0));
+  const total = Number(r.totalPayment!=null && r.totalPayment!=='' ? r.totalPayment : r.paymentReceived||0);
+  const p = (r.profit!==undefined && r.profit!==null && r.profit!=='') ? Number(r.profit) : (total - Number(r.expense||0));
   const cls = p>0 ? 'green' : (p<0 ? 'red' : 'gray');
   const txt = p>0 ? `Profit ${fmtMoney(p)}` : (p<0 ? `Loss ${fmtMoney(Math.abs(p))}` : 'Break-even');
   return `<span class="badge ${cls}">${txt}</span>`;
+}
+function bindProfitLossLiveCalc(){
+  const totalEl = document.getElementById('f_totalPayment');
+  const advEl = document.getElementById('f_advancePayment');
+  const pendEl = document.getElementById('f_pendingPayment');
+  if(!totalEl || !advEl || !pendEl) return;
+  function recalc(){
+    const total = Number(totalEl.value||0);
+    const adv = Number(advEl.value||0);
+    pendEl.value = Math.max(0, total-adv);
+  }
+  totalEl.addEventListener('input', recalc);
+  advEl.addEventListener('input', recalc);
+  recalc();
 }
 RENDERERS.profitloss = function(c){
   crudPage(c, {
@@ -2953,15 +2970,16 @@ RENDERERS.profitloss = function(c){
     searchKeys:['repairId','phoneModel'], getSearchVal:(r,k)=> k==='repairId' ? custName(r.customer)+' '+(r.repairId||'')+' '+(r.phoneModel||'') : r[k],
     itemLabel:r=>custName(r.customer)+' — '+(r.repairId||r.id),
     rowFilter: r=> monthKey(r.date) === currentMonthKey(),
+    afterRender:()=> bindProfitLossLiveCalc(),
     summaryFn: rows=>{
-      const totalPay = rows.reduce((s,r)=>s+Number(r.paymentReceived||0),0);
+      const totalPay = rows.reduce((s,r)=>s+Number(r.totalPayment!=null && r.totalPayment!=='' ? r.totalPayment : r.paymentReceived||0),0);
       const totalExp = rows.reduce((s,r)=>s+Number(r.expense||0),0);
       const net = totalPay - totalExp;
       const netCls = net>0?'green':(net<0?'red':'gray');
       const netTxt = net>0?`Profit ${fmtMoney(net)}`:(net<0?`Loss ${fmtMoney(Math.abs(net))}`:'Break-even');
       return `<div style="display:flex;gap:28px;flex-wrap:wrap;padding:14px 16px">
         <div><div class="cell-muted" style="font-size:12px">${escapeHtml(monthLabel(currentMonthKey()))}</div><div class="cell-strong" style="font-size:13px">This Month</div></div>
-        <div><div class="cell-muted" style="font-size:12px">Total Payment Received</div><div class="cell-strong">${fmtMoney(totalPay)}</div></div>
+        <div><div class="cell-muted" style="font-size:12px">Total Payment</div><div class="cell-strong">${fmtMoney(totalPay)}</div></div>
         <div><div class="cell-muted" style="font-size:12px">Total Expense</div><div class="cell-strong">${fmtMoney(totalExp)}</div></div>
         <div><div class="cell-muted" style="font-size:12px">Net Result</div><span class="badge ${netCls}">${netTxt}</span></div>
       </div>`;
@@ -2971,16 +2989,20 @@ RENDERERS.profitloss = function(c){
       {key:'customer', label:'Customer Name', type:'combo', matchCollection:'customers', placeholder:'Type or pick a customer name', options:DB.customers.map(x=>({value:x.id,label:x.name}))},
       {key:'phoneModel', label:'Phone Model'},
       {key:'date', label:'Date', type:'date', default:todayStr()},
-      {key:'paymentReceived', label:'Payment Received (Rs.)', type:'number'},
+      {key:'totalPayment', label:'Total Payment (Rs.)', type:'number'},
+      {key:'advancePayment', label:'Advance Payment (Rs.)', type:'number'},
+      {key:'pendingPayment', label:'Pending Payment (Rs.)', type:'number', readOnly:true},
       {key:'expense', label:'Expense / Cost (Rs.)', type:'number'},
       {key:'notes', label:'Notes', type:'textarea'},
     ],
     validate:d=>{
       d.date = d.date || todayStr();
       d.month = monthKey(d.date);
-      d.paymentReceived = Number(d.paymentReceived||0);
+      d.totalPayment = Number(d.totalPayment||0);
+      d.advancePayment = Number(d.advancePayment||0);
+      d.pendingPayment = Math.max(0, d.totalPayment - d.advancePayment);
       d.expense = Number(d.expense||0);
-      d.profit = d.paymentReceived - d.expense;
+      d.profit = d.totalPayment - d.expense;
       return null;
     },
     columns:[
@@ -2988,7 +3010,9 @@ RENDERERS.profitloss = function(c){
       {label:'Repair ID', render:r=> `<span class="cell-mono">${escapeHtml(r.repairId||'—')}</span>`},
       {label:'Customer', render:r=>`<div class="name-cell"><div class="avatar-sm">${initials(custName(r.customer))}</div><span class="cell-strong">${custName(r.customer)}</span></div>`},
       {label:'Phone Model', render:r=> escapeHtml(r.phoneModel||'—')},
-      {label:'Payment Received', render:r=> fmtMoney(r.paymentReceived||0)},
+      {label:'Total Payment', render:r=> fmtMoney(r.totalPayment!=null && r.totalPayment!=='' ? r.totalPayment : r.paymentReceived||0)},
+      {label:'Advance Payment', render:r=> fmtMoney(r.advancePayment||0)},
+      {label:'Pending Payment', render:r=> fmtMoney(r.pendingPayment!=null && r.pendingPayment!=='' ? r.pendingPayment : Math.max(0,Number(r.totalPayment||0)-Number(r.advancePayment||0)))},
       {label:'Expense', render:r=> fmtMoney(r.expense||0)},
       {label:'Profit / Loss', render:r=> plBadge(r)},
     ],
