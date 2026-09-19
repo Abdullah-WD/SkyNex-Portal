@@ -64,6 +64,7 @@ const NAV = [
   {group:'Sales', items:[
     {id:'sales', label:'Sell Accessories', icon:'cart'},
     {id:'orders', label:'Repair', icon:'cart'},
+    {id:'profitloss', label:'Profit/Loss', icon:'chart'},
     {id:'expenses', label:'Expense', icon:'wallet'},
   ]},
   {group:'Shop Ledger', items:[
@@ -98,6 +99,7 @@ const PAGE_META = {
   shopledger:['Shop Ledger','Record items/services given to a shopkeeper, track payments and outstanding receivables.'],
   sales:['Sell Accessories','Sell stock items & accessories directly to a walk-in or existing customer.'],
   orders:['Repair','Track repair jobs from intake to delivery.'],
+  profitloss:['Profit/Loss','See how much you earned or lost on each repair, month by month.'],
   expenses:['Expense','Log workshop expenses and running costs.'],
   repairs:['Repair','Manage every repair job from intake to delivery.'],
   customers:['Customer Data','Your customer directory and service history.'],
@@ -129,6 +131,14 @@ function fmtDate(d){ if(!d) return '—'; const dt = new Date(d); return dt.toLo
 function daysAgo(n){ const d = new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
 function nowTimeStr(){ const d = new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function monthKey(dateStr){ return String(dateStr||todayStr()).slice(0,7); }
+function currentMonthKey(){ return todayStr().slice(0,7); }
+function monthLabel(key){
+  if(!key) return '—';
+  const [y,m] = key.split('-');
+  const d = new Date(Number(y), Number(m)-1, 1);
+  return d.toLocaleDateString('en-GB',{month:'long', year:'numeric'});
+}
 function initials(name){ return (name||'?').split(' ').filter(Boolean).slice(0,2).map(w=>w[0].toUpperCase()).join(''); }
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 const PALETTE = ['#2E5EFF','#8B2FE0','#FF6A3D','#17B26A','#F5A623','#F04438','#0EA5E9','#D946EF'];
@@ -219,7 +229,7 @@ function emptyDB(){
       address:'', phone:'', email:'', trackingUrl:'', lowStockAlerts:true, emailNotify:true, morningDigestTime:'10:00', nightDigestTime:'22:00', currentUser:null},
     lists:{expenseCategories:[], paidBy:[], orderStatuses:[], invoiceStatuses:[], repairStatuses:[], userStatuses:[]},
     roles:[], categories:[], products:[], customers:[], suppliers:[], purchases:[], shops:[], shopSales:[],
-    users:[], repairs:[], orders:[], sales:[], invoices:[], expenses:[], history:[], requests:[], schemaVersion:SEED_VERSION,
+    users:[], repairs:[], orders:[], sales:[], invoices:[], expenses:[], profitLoss:[], history:[], requests:[], schemaVersion:SEED_VERSION,
   };
 }
 let DB = emptyDB();
@@ -227,17 +237,18 @@ function save(){ safeStorage.setItem(STORE_KEY, JSON.stringify(DB)); }
 
 async function fetchAllData(){
   const [categories, products, customers, suppliers, purchases, shops, shopSales,
-         sales, orders, invoices, expenses, roles, requests, users, listsObj, settingsObj, history] = await Promise.all([
+         sales, orders, invoices, expenses, roles, requests, users, listsObj, settingsObj, history, profitLoss] = await Promise.all([
     Api.categories.list(), Api.products.list(), Api.customers.list(), Api.suppliers.list(), Api.purchases.list(),
     Api.shops.list(), Api.shopSales.list(), Api.sales.list(), Api.orders.list(), Api.invoices.list(),
     Api.expenses.list(), Api.roles.list(), Api.requests.list(), Api.users.list(),
-    Api.lists.getAll(), Api.settings.get(), Api.history.list(200),
+    Api.lists.getAll(), Api.settings.get(), Api.history.list(200), Api.profitLoss.list(),
   ]);
   Object.assign(DB, {
     categories, products, customers, suppliers, purchases, shops, shopSales,
-    sales, orders, invoices, expenses, roles, requests, users, history,
+    sales, orders, invoices, expenses, roles, requests, users, history, profitLoss,
   });
   DB.repairs = DB.repairs || [];
+  DB.profitLoss = DB.profitLoss || [];
   Object.keys(listsObj||{}).forEach(k=>{ if(Array.isArray(listsObj[k])) DB.lists[k] = listsObj[k]; });
   Object.assign(DB.settings, settingsObj||{});
   const cached = Api.Auth.cachedUser();
@@ -1265,6 +1276,7 @@ function crudPage(container, opts){
     (opts.filters||[]).forEach(f=>{
       if(filterVals[f.key]) rows = rows.filter(r => String(r[f.key])===filterVals[f.key]);
     });
+    if(opts.rowFilter) rows = rows.filter(opts.rowFilter);
     if(opts.statusOrder){
       const rank = s => { const i = opts.statusOrder.indexOf(s); return i===-1 ? opts.statusOrder.length : i; };
       rows = rows.slice().sort((a,b)=> rank(a.status)-rank(b.status));
@@ -1295,6 +1307,10 @@ function crudPage(container, opts){
     const rows = getRows();
     const sub = container.querySelector('.section-head .sub');
     if(sub) sub.textContent = `${rows.length} of ${DB[opts.collection].length} ${opts.title.toLowerCase()}`;
+    if(opts.summaryFn){
+      const sc = container.querySelector('#crudSummaryCard');
+      if(sc) sc.innerHTML = opts.summaryFn(rows);
+    }
     const card = container.querySelector('#crudTableCard');
     if(!card) return;
     card.innerHTML = renderTableInner(rows);
@@ -1339,6 +1355,7 @@ function crudPage(container, opts){
           </select>`;
         }).join('')}
       </div>
+      ${opts.summaryFn ? `<div class="table-card" id="crudSummaryCard" style="margin-bottom:14px">${opts.summaryFn(rows)}</div>` : ''}
       <div class="table-card" id="crudTableCard">
         ${renderTableInner(rows)}
       </div>
@@ -1516,7 +1533,8 @@ RENDERERS.dashboard = function(c){
     + DB.orders.filter(o=>o.status==='Completed').reduce((s,o)=>s+Number(o.total),0)
     + DB.sales.filter(s=>s.status==='Paid').reduce((s,sale)=>s+Number(sale.total),0);
   const totalExpense = DB.expenses.reduce((s,e)=>s+Number(e.amount),0);
-  const profit = totalRevenue - totalExpense;
+  const plRows = DB.profitLoss.filter(r=>monthKey(r.date)===currentMonthKey());
+  const profit = plRows.reduce((s,r)=> s + (r.profit!==undefined && r.profit!==null && r.profit!=='' ? Number(r.profit) : (Number(r.paymentReceived||0)-Number(r.expense||0))), 0);
   const activeRep = activeRepairs().length;
   const lowStock = lowStockItems().length;
   const unpaidInv = DB.invoices.filter(i=>i.status!=='Paid').reduce((s,i)=>s+Number(i.amount),0);
@@ -1525,7 +1543,7 @@ RENDERERS.dashboard = function(c){
     <div class="kpi-grid">
       ${kpiCard('wallet','var(--green)', fmtMoney(totalRevenue), 'Total Income','','up')}
       ${kpiCard('wallet','var(--red)', fmtMoney(totalExpense), 'Total Expense','','down')}
-      ${kpiCard('chart', profit>=0?'var(--blue)':'var(--red)', fmtMoney(profit), 'Profit/Loss','', profit>=0?'up':'down')}
+      ${kpiCard('chart', profit>=0?'var(--blue)':'var(--red)', fmtMoney(profit), 'Profit/Loss','This month', profit>=0?'up':'down')}
       ${kpiCard('tool', 'var(--orange)', activeRep, 'Repair (In Queue)', activeRep>0?activeRep+' in queue':'All clear','up')}
       ${kpiCard('alert', 'var(--red)', lowStock, 'Low Stock', lowStock>0?'Needs reorder':'Stock healthy', lowStock>0?'down':'up')}
       ${kpiCard('file', 'var(--purple)', fmtMoney(unpaidInv), 'Pending Invoice', DB.invoices.filter(i=>i.status!=='Paid').length+' unpaid','down')}
@@ -2679,6 +2697,8 @@ RENDERERS.orders = function(c){
       {key:'fault', label:'Fault', type:'textarea', placeholder:'Describe the fault / issue with the device'},
       {key:'phoneModel', label:'Phone Model', placeholder:'e.g. iPhone 13 Pro'},
       {key:'total', label:'Estimated Cost (Rs.)', type:'number'},
+      {key:'advance', label:'Advance Payment (Rs.)', type:'number'},
+      {key:'status', label:'Status', type:'select', manageKey:'orderstatus', options:DB.lists.orderStatuses.map(s=>({value:s,label:s}))},
       {key:'devicePhoto', label:'Image', type:'image', capture:'environment'},
       {key:'extraFeaturesNotes', label:'Notes', type:'textarea', placeholder:'Any extra notes / special features about this device or job...'},
       {key:'showMore', label:'Show More', type:'toggle'},
@@ -2703,9 +2723,7 @@ RENDERERS.orders = function(c){
         {key:'label', label:'Description', placeholder:'e.g. Labor / Service Charge'},
         {key:'amount', label:'Amount (Rs.)', type:'number', placeholder:'0'},
       ]},
-      {key:'advance', label:'Advance Payment (Rs.)', type:'number'},
       {key:'deliveryDate', label:'Estimated Delivery Date', type:'date'},
-      {key:'status', label:'Status', type:'select', manageKey:'orderstatus', options:DB.lists.orderStatuses.map(s=>({value:s,label:s}))},
       {key:'repairedBy', label:'Repaired By', placeholder:'Enter name (Admin only)', adminOnly:true},
       {key:'date', label:'Received Date', type:'date', default:todayStr()},
       {key:'time', label:'Received Time', type:'time', default:nowTimeStr()},
@@ -2741,7 +2759,7 @@ RENDERERS.orders = function(c){
     },
     wideForm:true,
     onCreateExtra:()=>({trackingId: genTrackingId('REP')}),
-    onSaved: async (order, isEdit, prevSnapshot)=>{ await ensureInvoiceForOrder(order); await reconcilePartsStock(order, prevSnapshot?prevSnapshot.status:null); },
+    onSaved: async (order, isEdit, prevSnapshot)=>{ await ensureInvoiceForOrder(order); await reconcilePartsStock(order, prevSnapshot?prevSnapshot.status:null); await ensureProfitLossForOrder(order, isEdit); },
   });
 };
 function trackingCell(code){
@@ -2757,7 +2775,7 @@ function copyTrackingId(ev, code){
     done();
   }
 }
-const SHOW_MORE_KEYS = ['address','technician','customerPhoto','category','phoneHistory','checkedElsewhere','devices','customerConfirmation','partsUsed','serviceCharges','advance','deliveryDate','status','repairedBy','date','time','notes'];
+const SHOW_MORE_KEYS = ['address','technician','customerPhoto','category','phoneHistory','checkedElsewhere','devices','customerConfirmation','partsUsed','serviceCharges','deliveryDate','repairedBy','date','time','notes'];
 function updateShowMoreVisibility(){
   const toggleEl = document.getElementById('f_showMore');
   const show = !!(toggleEl && toggleEl.checked);
@@ -2826,6 +2844,30 @@ async function reconcilePartsStock(order, prevStatus){
     log(`Parts stock restored — repair ${order.id} moved out of Completed`, 'products', {kind:'stock-in'});
     order._stockDeducted = false;
     order._deductedParts = [];
+  }
+}
+
+async function ensureProfitLossForOrder(order, isEdit){
+  const phoneModel = order.phoneModel || (order.devices && order.devices[0] && order.devices[0].device) || '';
+  const dateVal = order.date || todayStr();
+  let pl = DB.profitLoss.find(p=>p.repairId===order.id);
+  if(!pl){
+    const data = {
+      repairId: order.id, customer: order.customer, phoneModel,
+      date: dateVal, month: monthKey(dateVal),
+      paymentReceived: Number(order.advance||0), expense: 0,
+      profit: Number(order.advance||0), notes:'',
+    };
+    try{
+      const created = await Api.profitLoss.create(data);
+      const newItem = Object.assign({id: created.id || uid('PL')}, data, created);
+      DB.profitLoss.push(newItem);
+      save();
+      log(`Profit/Loss entry auto-created for Repair ${order.id}`, 'profitLoss');
+    }catch(e){ /* offline preview — non-fatal */ }
+  } else if(isEdit){
+    pl.customer = order.customer; pl.phoneModel = phoneModel; pl.date = dateVal; pl.month = monthKey(dateVal);
+    try{ await Api.profitLoss.update(pl.id, {customer:pl.customer, phoneModel:pl.phoneModel, date:pl.date, month:pl.month}); save(); }catch(e){}
   }
 }
 
@@ -2898,6 +2940,60 @@ function ensureInvoiceForRepair(repair){
     toast('Invoice auto-generated for this repair job');
   }
 }
+
+function plBadge(r){
+  const p = (r.profit!==undefined && r.profit!==null && r.profit!=='') ? Number(r.profit) : (Number(r.paymentReceived||0)-Number(r.expense||0));
+  const cls = p>0 ? 'green' : (p<0 ? 'red' : 'gray');
+  const txt = p>0 ? `Profit ${fmtMoney(p)}` : (p<0 ? `Loss ${fmtMoney(Math.abs(p))}` : 'Break-even');
+  return `<span class="badge ${cls}">${txt}</span>`;
+}
+RENDERERS.profitloss = function(c){
+  crudPage(c, {
+    collection:'profitLoss', title:'Profit/Loss', singular:'Profit/Loss Entry', prefix:'PL', newLabel:'Add Entry', enableExcel:true,
+    searchKeys:['repairId','phoneModel'], getSearchVal:(r,k)=> k==='repairId' ? custName(r.customer)+' '+(r.repairId||'')+' '+(r.phoneModel||'') : r[k],
+    itemLabel:r=>custName(r.customer)+' — '+(r.repairId||r.id),
+    rowFilter: r=> monthKey(r.date) === currentMonthKey(),
+    summaryFn: rows=>{
+      const totalPay = rows.reduce((s,r)=>s+Number(r.paymentReceived||0),0);
+      const totalExp = rows.reduce((s,r)=>s+Number(r.expense||0),0);
+      const net = totalPay - totalExp;
+      const netCls = net>0?'green':(net<0?'red':'gray');
+      const netTxt = net>0?`Profit ${fmtMoney(net)}`:(net<0?`Loss ${fmtMoney(Math.abs(net))}`:'Break-even');
+      return `<div style="display:flex;gap:28px;flex-wrap:wrap;padding:14px 16px">
+        <div><div class="cell-muted" style="font-size:12px">${escapeHtml(monthLabel(currentMonthKey()))}</div><div class="cell-strong" style="font-size:13px">This Month</div></div>
+        <div><div class="cell-muted" style="font-size:12px">Total Payment Received</div><div class="cell-strong">${fmtMoney(totalPay)}</div></div>
+        <div><div class="cell-muted" style="font-size:12px">Total Expense</div><div class="cell-strong">${fmtMoney(totalExp)}</div></div>
+        <div><div class="cell-muted" style="font-size:12px">Net Result</div><span class="badge ${netCls}">${netTxt}</span></div>
+      </div>`;
+    },
+    fields:[
+      {key:'repairId', label:'Repair ID', placeholder:'e.g. REP-XXXXX (leave blank for a manual entry)'},
+      {key:'customer', label:'Customer Name', type:'combo', matchCollection:'customers', placeholder:'Type or pick a customer name', options:DB.customers.map(x=>({value:x.id,label:x.name}))},
+      {key:'phoneModel', label:'Phone Model'},
+      {key:'date', label:'Date', type:'date', default:todayStr()},
+      {key:'paymentReceived', label:'Payment Received (Rs.)', type:'number'},
+      {key:'expense', label:'Expense / Cost (Rs.)', type:'number'},
+      {key:'notes', label:'Notes', type:'textarea'},
+    ],
+    validate:d=>{
+      d.date = d.date || todayStr();
+      d.month = monthKey(d.date);
+      d.paymentReceived = Number(d.paymentReceived||0);
+      d.expense = Number(d.expense||0);
+      d.profit = d.paymentReceived - d.expense;
+      return null;
+    },
+    columns:[
+      {label:'Date', render:r=> escapeHtml(r.date||'—')},
+      {label:'Repair ID', render:r=> `<span class="cell-mono">${escapeHtml(r.repairId||'—')}</span>`},
+      {label:'Customer', render:r=>`<div class="name-cell"><div class="avatar-sm">${initials(custName(r.customer))}</div><span class="cell-strong">${custName(r.customer)}</span></div>`},
+      {label:'Phone Model', render:r=> escapeHtml(r.phoneModel||'—')},
+      {label:'Payment Received', render:r=> fmtMoney(r.paymentReceived||0)},
+      {label:'Expense', render:r=> fmtMoney(r.expense||0)},
+      {label:'Profit / Loss', render:r=> plBadge(r)},
+    ],
+  });
+};
 
 RENDERERS.invoices = function(c){
   crudPage(c, {

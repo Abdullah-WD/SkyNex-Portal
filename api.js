@@ -62,7 +62,7 @@
           trackingId:'TRK-DEMO1',
         },
       ],
-      invoices: [], expenses: [], history: [], requests: [],
+      invoices: [], expenses: [], profitLoss: [], history: [], requests: [],
       settings: {
         business_name:'Sky Nex', tagline:'Mobile Repair Workshop & Institute', currency:'PKR', theme:'light',
         address:'Main Boulevard, Lahore', phone:'0300-1234567', email:'info@skynex.local', tracking_url:'',
@@ -196,7 +196,7 @@
     };
   }
 
-  const ENTITY_NAMES = ['categories','products','customers','suppliers','purchases','shops','shopSales','sales','orders','invoices','expenses','users','roles','requests'];
+  const ENTITY_NAMES = ['categories','products','customers','suppliers','purchases','shops','shopSales','sales','orders','invoices','expenses','profitLoss','users','roles','requests'];
 
   const Api = { request, Auth, Uploads, dataUrlToFile, isDataUrl, isUploadedFileUrl, setUnauthorizedHandler, ApiClientError };
   ENTITY_NAMES.forEach(name=>{ Api[name] = makeEntityApi(name); });

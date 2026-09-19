@@ -49,11 +49,11 @@ input,select,textarea{font-family:inherit; font-size:inherit; color:inherit;}
 }
 .login-logo-ring{
   width:88px; height:88px; border-radius:50%; margin:0 auto 18px; display:flex; align-items:center; justify-content:center;
-  background:#0B0D16; border:1.5px solid transparent;
-  background-image:linear-gradient(#0B0D16,#0B0D16), var(--grad-warm);
-  background-origin:border-box; background-clip:content-box, border-box; padding:6px;
+  background:#fff; border:1.5px solid transparent;
+  background-image:linear-gradient(#fff,#fff), var(--grad-warm);
+  background-origin:border-box; background-clip:content-box, border-box; padding:6px; overflow:hidden;
 }
-.login-logo-ring img{width:100%; height:100%; object-fit:contain;}
+.login-logo-ring img{width:100%; height:100%; object-fit:contain; border-radius:50%;}
 .login-title{font-family:var(--font-display); font-weight:800; font-size:24px; color:#fff; letter-spacing:.04em;}
 .login-brand-tag{font-size:12.5px; color:var(--text-faint); margin-top:4px;}
 .login-sub{font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; color:#8B8FB0; margin:14px 0 22px; font-weight:600;}
