@@ -2326,18 +2326,69 @@ function bindSaleLiveTotal(){
   if(discountEl) discountEl.addEventListener('input', recalc);
   recalc();
 }
+function saleQtyByProduct(items){
+  const map = {};
+  (items||[]).forEach(it=>{
+    const q = Number(it.qty)||0;
+    if(it.product && q>0) map[it.product] = (map[it.product]||0) + q;
+  });
+  return map;
+}
+function saleStockOptions(){
+  return [{value:'',label:'— Select Stock Item —'}].concat(DB.products.map(p=>({value:p.id, label:`${p.name} (${p.stock} in stock) — ${fmtMoney(p.price)}`})));
+}
+// Deducts sold quantities from Stock Items. On edit, only the difference vs the
+// previously deducted quantities is applied, so stock never gets deducted twice.
 async function reconcileSaleStock(sale, prevSnapshot){
-  try{
-    DB.products = await Api.products.list();
-  }catch(e){ }
-  sale._stockDeducted = true;
-  log(`Stock updated for accessory sale ${sale.id}`, 'products', {kind:'stock-out'});
+  const cachedStock = {};
+  DB.products.forEach(p=>{ cachedStock[p.id] = Number(p.stock)||0; });
+  let fresh = null;
+  try{ fresh = await Api.products.list(); }catch(e){}
+  if(fresh) DB.products = fresh;
+
+  const prevWasDeducted = !!(prevSnapshot && prevSnapshot._stockDeducted);
+  const prevQty = prevWasDeducted ? saleQtyByProduct(prevSnapshot._deductedItems) : {};
+  const newQty = saleQtyByProduct(sale.items);
+  const ids = new Set(Object.keys(prevQty).concat(Object.keys(newQty)));
+  const touched = [], short = [];
+  let backendHandled = false;
+
+  ids.forEach(id=>{
+    const prod = DB.products.find(p=>p.id===id);
+    if(!prod) return;
+    const delta = (newQty[id]||0) - (prevQty[id]||0);   // > 0 : more sold, < 0 : less sold
+    if(!delta) return;
+    // If the server already deducted this sale on its own, don't deduct again.
+    if(!prevWasDeducted && fresh && (id in cachedStock) && Number(prod.stock) <= cachedStock[id] - delta){
+      backendHandled = true; return;
+    }
+    const before = Number(prod.stock)||0;
+    if(delta>0 && before < delta) short.push(prod.name);
+    prod.stock = Math.max(0, before - delta);
+    touched.push(prod);
+  });
+
+  if(!backendHandled){
+    sale._stockDeducted = true;
+    sale._deductedItems = Object.keys(newQty).map(id=>({product:id, qty:newQty[id]}));
+    Api.sales.update(sale.id, {_stockDeducted:true, _deductedItems:sale._deductedItems}).catch(()=>{});
+  }
+  await Promise.all(touched.map(prod=> Api.products.update(prod.id, {stock: prod.stock}).catch(()=>{})));
+  if(touched.length){
+    log(`Stock updated for accessory sale ${sale.id}`, 'products', {kind:'stock-out'});
+    toast(short.length ? `Stock updated — insufficient stock for: ${short.join(', ')}` : 'Stock Items updated automatically', short.length?'error':undefined);
+  }
 }
 async function restoreSaleStock(sale){
-  try{
-    DB.products = await Api.products.list();
-  }catch(e){}
-  log(`Stock restored — accessory sale ${sale.id} deleted`, 'products', {kind:'stock-in'});
+  if(!sale || !sale._stockDeducted) return;
+  try{ DB.products = await Api.products.list(); }catch(e){}
+  const touched = [];
+  (sale._deductedItems||[]).forEach(it=>{
+    const prod = DB.products.find(p=>p.id===it.product);
+    if(prod){ prod.stock = Number(prod.stock||0) + Number(it.qty); touched.push(prod); }
+  });
+  await Promise.all(touched.map(prod=> Api.products.update(prod.id, {stock: prod.stock}).catch(()=>{})));
+  if(touched.length) log(`Stock restored — accessory sale ${sale.id} deleted`, 'products', {kind:'stock-in'});
 }
 async function ensureInvoiceForSale(sale){
   const cust = DB.customers.find(x=>x.id===sale.customer) || {};
@@ -2593,6 +2644,12 @@ function printDeviceLabel(order){
   window.print();
 }
 RENDERERS.sales = function(c){
+  // keep the "(N in stock)" labels in the item dropdown current after every sale
+  const refreshSaleStockOptions = ()=>{
+    const f = saleFields.find(x=>x.key==='items');
+    if(f) f.subFields[0].options = saleStockOptions();
+  };
+  let saleFields = [];
   crudPage(c, {
     collection:'sales', title:'Sell Accessories', singular:'Sale', prefix:'SAL', newLabel:'New Sale', enableExcel:true, enableViewDetail:true, enableSignature:true,
     searchKeys:['id'], getSearchVal:(r,k)=> k==='id' ? custName(r.customer)+' '+r.id+' '+(r.trackingId||'') : r[k],
@@ -2608,11 +2665,11 @@ RENDERERS.sales = function(c){
       {label:'Status', render:s=>statusBadge(s.status)},
       {label:'Date', render:s=>`<span class="cell-muted">${fmtDate(s.date)}</span>`},
     ],
-    fields:[
+    fields:saleFields = [
       {key:'customer', label:'Customer Name', type:'combo', matchCollection:'customers', placeholder:'Type "Walk-in Customer" or an existing name', options:DB.customers.map(x=>({value:x.id,label:x.name}))},
       {key:'customerPhone', label:'Customer Phone (optional)', placeholder:'03XX-XXXXXXX'},
       {key:'items', label:'Accessories / Stock Items', type:'repeater', itemName:'Item', subFields:[
-        {key:'product', label:'Item', type:'select', options:[{value:'',label:'— Select Stock Item —'}].concat(DB.products.map(p=>({value:p.id, label:`${p.name} (${p.stock} in stock) — ${fmtMoney(p.price)}`})))},
+        {key:'product', label:'Item', type:'select', options:saleStockOptions()},
         {key:'qty', label:'Quantity', type:'number', placeholder:'1'},
         {key:'price', label:'Unit Price (Rs.)', type:'number', placeholder:'0'},
       ]},
@@ -2622,23 +2679,28 @@ RENDERERS.sales = function(c){
       {key:'date', label:'Sale Date', type:'date', default:todayStr()},
       {key:'notes', label:'Notes', type:'textarea'},
     ],
-    validate:d=>{
+    validate:(d, item)=>{
       if(!String(d.customer||'').trim()) return 'Customer name is required (type "Walk-in Customer" if unknown)';
       const items = (d.items||[]).filter(it=>it.product && Number(it.qty)>0);
       if(!items.length) return 'Add at least one item to sell';
-      for(const it of items){
-        const prod = DB.products.find(p=>p.id===it.product);
+      const need = saleQtyByProduct(items);
+      // when editing, quantities already deducted by this sale are available again
+      const prevQty = (item && item._stockDeducted) ? saleQtyByProduct(item._deductedItems) : {};
+      for(const id of Object.keys(need)){
+        const prod = DB.products.find(p=>p.id===id);
         if(!prod) continue;
-        if(Number(it.qty) > Number(prod.stock)) return `Not enough stock for ${prod.name} — only ${prod.stock} left`;
+        const available = Number(prod.stock) + (prevQty[id]||0);
+        if(need[id] > available) return `Not enough stock for ${prod.name} — only ${available} left`;
       }
       return null;
     },
     afterRender:()=>{ bindPhoneMask('f_customerPhone'); bindSaleLiveTotal(); },
     wideForm:true,
     onCreateExtra:()=>({trackingId: genTrackingId('ACC')}),
-    onSaved: async (sale, isEdit, prevSnapshot)=>{ await reconcileSaleStock(sale, prevSnapshot); await ensureInvoiceForSale(sale); },
+    onSaved: async (sale, isEdit, prevSnapshot)=>{ await reconcileSaleStock(sale, prevSnapshot); await ensureInvoiceForSale(sale); refreshSaleStockOptions(); },
     onDelete: async (sale)=>{
       await restoreSaleStock(sale);
+      refreshSaleStockOptions();
       const inv = DB.invoices.find(i=>i.ref===sale.id);
       if(inv) DB.invoices.splice(DB.invoices.indexOf(inv),1);
     },
@@ -2648,7 +2710,6 @@ RENDERERS.sales = function(c){
 const REPORTED_ISSUE_OPTS = ['No Power / Dead','Not Charging','Fast Battery Drain','Heating','Restarting / Boot Loop','Stuck on Apple/Logo','Software/Restore Issue','Network/Signal Issue','Wi-Fi/Bluetooth Issue','Camera Issue','Face ID / Touch ID Issue','Display/Touch Issue','Back Glass/Frame Damage','Speaker/Mic Issue','Vibration Issue','Water/Liquid Damage'];
 const PHYSICAL_CONDITION_OPTS = ['Screen cracked','Back glass cracked','Frame bent/damaged','Camera glass damaged','Missing screws/parts','Previous repair/opened','Signs of liquid damage','Heavy scratches/dents'];
 const FUNCTION_TEST_OPTS = ['Display','Touch','Charging','Battery health','Front camera','Rear cameras','Flash','Ear speaker','Loud speaker','Microphone','Wi-Fi','Bluetooth','Mobile network','SIM','Face ID/Touch ID','Proximity sensor','Vibration','Power/volume buttons'];
-const CUSTOMER_CONFIRMATION_OPTS = ['Customer has been informed that data loss may occur during software/repair work','Customer has backed up important data','Customer understands that previously repaired devices may have additional faults','Customer has disclosed any previous repair/liquid damage','Customer authorizes diagnosis and repair'];
 const DEVICE_SUBFIELDS = [
   {key:'device', label:'Device / Phone Model', placeholder:'e.g. iPhone 13 Pro'},
   {key:'imei', label:'IMEI / Serial No'},
@@ -2707,18 +2768,10 @@ RENDERERS.orders = function(c){
       {key:'technician', label:'Technician', placeholder:'Enter technician name'},
       {key:'customerPhoto', label:'Customer Picture (Security Photo)', type:'webcam', optional:true},
       {key:'category', label:'Repair Type', type:'select', manageKey:'repaircats', options:DB.categories.filter(x=>x.type==='Repair').map(x=>({value:x.id,label:x.name}))},
-      {key:'phoneHistory', label:'Phone History', type:'textarea', placeholder:'How the issue started / how the phone died, prior repairs, usage history, etc.'},
-      {key:'checkedElsewhere', label:'Checked By Someone Else Before?', type:'select', options:[{value:'No',label:'No'},{value:'Yes',label:'Yes'}]},
       {key:'devices', label:'Devices', type:'repeater', itemName:'Device', subFields:DEVICE_SUBFIELDS},
       {key:'reportedIssues', label:'Reported Issue', type:'checklist', options:REPORTED_ISSUE_OPTS, onChange:()=>updateRepairChecklistVisibility()},
       {key:'physicalCondition', label:'Physical Condition — Check Before Opening', type:'checklist', options:PHYSICAL_CONDITION_OPTS},
       {key:'functionTest', label:'Function Test (if the phone powers on)', type:'checklist', options:FUNCTION_TEST_OPTS},
-      {key:'customerConfirmation', label:'Customer Confirmation', type:'checklist', options:CUSTOMER_CONFIRMATION_OPTS},
-      {key:'partsUsed', label:'Parts Used (Stock Items)', type:'repeater', itemName:'Part', subFields:[
-        {key:'product', label:'Stock Item', type:'select', options:[{value:'',label:'— Select Stock Item —'}].concat(DB.products.map(p=>({value:p.id, label:`${p.name} (${p.stock} in stock)`})))},
-        {key:'qty', label:'Quantity Used', type:'number', placeholder:'1'},
-        {key:'price', label:'Price Charged / Unit (Rs.)', type:'number', placeholder:'0'},
-      ]},
       {key:'serviceCharges', label:'Service Charges (Labor, Diagnostic Fee, etc.)', type:'repeater', itemName:'Charge', subFields:[
         {key:'label', label:'Description', placeholder:'e.g. Labor / Service Charge'},
         {key:'amount', label:'Amount (Rs.)', type:'number', placeholder:'0'},
@@ -2727,7 +2780,6 @@ RENDERERS.orders = function(c){
       {key:'repairedBy', label:'Repaired By', placeholder:'Enter name (Admin only)', adminOnly:true},
       {key:'date', label:'Received Date', type:'date', default:todayStr()},
       {key:'time', label:'Received Time', type:'time', default:nowTimeStr()},
-      {key:'notes', label:'Notes (Internal)', type:'textarea'},
     ],
     validate:d=>{
       if(!String(d.customer||'').trim()) return 'Customer name is required';
@@ -2775,7 +2827,7 @@ function copyTrackingId(ev, code){
     done();
   }
 }
-const SHOW_MORE_KEYS = ['address','technician','customerPhoto','category','phoneHistory','checkedElsewhere','devices','customerConfirmation','partsUsed','serviceCharges','deliveryDate','repairedBy','date','time','notes'];
+const SHOW_MORE_KEYS = ['address','technician','customerPhoto','category','devices','serviceCharges','deliveryDate','repairedBy','date','time'];
 function updateShowMoreVisibility(){
   const toggleEl = document.getElementById('f_showMore');
   const show = !!(toggleEl && toggleEl.checked);
