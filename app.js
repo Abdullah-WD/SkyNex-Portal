@@ -787,7 +787,7 @@ function renderReadOnlyField(f, val){
       <div style="display:flex;flex-direction:column;gap:10px">
         ${items.map((it,i)=>`<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px">
           <div style="font-weight:700;font-size:12px;margin-bottom:6px;color:var(--text-muted)">${escapeHtml(f.itemName||'Item')} ${i+1}</div>
-          <div class="ro-grid">${(f.subFields||[]).map(sf=>renderReadOnlyField(sf, it[sf.key])).join('')}</div>
+          <div class="ro-grid">${(f.subFields||[]).filter(sf=>isFieldFilled(sf, it[sf.key])).map(sf=>renderReadOnlyField(sf, it[sf.key])).join('')}</div>
         </div>`).join('')}
       </div></div>`;
   }
@@ -797,8 +797,20 @@ function renderReadOnlyField(f, val){
   if(f.type==='password') return '';
   return readOnlyRow(f.label, escapeHtml(val===''||val==null?'—':val));
 }
+function isFieldFilled(f, val){
+  if(f.type==='password') return false;
+  if(val===undefined || val===null) return false;
+  if(f.type==='checklist') return Array.isArray(val) && val.some(it=>it && it.checked);
+  if(f.type==='repeater') return Array.isArray(val) && val.some(it=> it && Object.keys(it).some(k=>{ const v=it[k]; return v!==undefined && v!==null && String(v).trim()!==''; }));
+  if(f.type==='toggle') return !!val;
+  if(f.type==='image' || f.type==='webcam') return !!val;
+  if(f.type==='number') return Number(val)!==0;
+  if(typeof val==='string') return val.trim()!=='';
+  return !!val;
+}
 function openDetailView(opts, item){
-  const body = `<div class="ro-grid">${opts.fields.map(f=>renderReadOnlyField(f, item[f.key])).join('')}</div>`;
+  const visibleFields = opts.fields.filter(f=> isFieldFilled(f, item[f.key]));
+  const body = `<div class="ro-grid">${visibleFields.map(f=>renderReadOnlyField(f, item[f.key])).join('')}</div>`;
   openModal((opts.singular||'Record')+' Details', body,
     `<button class="btn btn-outline" onclick="closeModal()">Close</button>`, opts.wideForm);
 }
