@@ -1541,25 +1541,39 @@ function statusBadge(status){
 const RENDERERS = {};
 
 RENDERERS.dashboard = function(c){
-  const repairIncome = DB.orders.filter(o=>o.status!=='Cancelled').reduce((s,o)=>s+Number(o.advance||0),0);
-  const salesIncome = DB.sales.reduce((s,sale)=>s+Number(sale.total||0),0);
-  const standaloneInvoiceIncome = DB.invoices.filter(i=> i.status==='Paid' && !DB.orders.some(o=>o.id===i.ref) && !DB.sales.some(s=>s.id===i.ref)).reduce((s,i)=>s+Number(i.amount||0),0);
-  const totalRevenue = repairIncome + salesIncome + standaloneInvoiceIncome;
-  const totalExpense = DB.expenses.reduce((s,e)=>s+Number(e.amount),0);
-  const plRows = DB.profitLoss.filter(r=>monthKey(r.date)===currentMonthKey());
-  const profit = plRows.reduce((s,r)=> s + (r.profit!==undefined && r.profit!==null && r.profit!=='' ? Number(r.profit) : (Number(r.paymentReceived||0)-Number(r.expense||0))), 0);
+  const mKey = currentMonthKey();
+
+  // Income from "Sell Accessories" — this month's sales
+  const salesIncome = DB.sales.filter(s=>monthKey(s.date)===mKey).reduce((s,sale)=>s+Number(sale.total||0),0);
+
+  // Income + expense from "Repair" jobs — every Repair order auto-creates a matching Profit/Loss
+  // entry, so that ledger (totalPayment / expense) is the single source of truth for repair money.
+  const plRowsThisMonth = DB.profitLoss.filter(r=>monthKey(r.date)===mKey);
+  const repairIncome = plRowsThisMonth.reduce((s,r)=> s + Number(r.totalPayment!=null && r.totalPayment!=='' ? r.totalPayment : (r.paymentReceived||0)), 0);
+  const repairExpense = plRowsThisMonth.reduce((s,r)=> s + Number(r.expense||0), 0);
+
+  // Any standalone paid invoice not already tied to a Repair order or a Sale (avoids double counting)
+  const standaloneInvoiceIncome = DB.invoices.filter(i=> i.status==='Paid' && monthKey(i.date)===mKey && !DB.orders.some(o=>o.id===i.ref) && !DB.sales.some(s=>s.id===i.ref)).reduce((s,i)=>s+Number(i.amount||0),0);
+
+  // General workshop running costs logged in the "Expense" section
+  const generalExpense = DB.expenses.filter(e=>monthKey(e.date)===mKey).reduce((s,e)=>s+Number(e.amount||0),0);
+
+  const totalRevenue = salesIncome + repairIncome + standaloneInvoiceIncome;
+  const totalExpense = generalExpense + repairExpense;
+  const profit = totalRevenue - totalExpense;
+
   const activeRep = activeRepairs().length;
   const lowStock = lowStockItems().length;
   const unpaidInv = DB.invoices.filter(i=>i.status!=='Paid').reduce((s,i)=>s+Number(i.amount),0);
 
   c.innerHTML = `
     <div class="kpi-grid">
-      ${kpiCard('wallet','var(--green)', fmtMoney(totalRevenue), 'Total Income','','up')}
-      ${kpiCard('wallet','var(--red)', fmtMoney(totalExpense), 'Total Expense','','down')}
-      ${kpiCard('chart', profit>=0?'var(--blue)':'var(--red)', fmtMoney(profit), 'Profit/Loss','This month', profit>=0?'up':'down')}
-      ${kpiCard('tool', 'var(--orange)', activeRep, 'Repair (In Queue)', activeRep>0?activeRep+' in queue':'All clear','up')}
-      ${kpiCard('alert', 'var(--red)', lowStock, 'Low Stock', lowStock>0?'Needs reorder':'Stock healthy', lowStock>0?'down':'up')}
-      ${kpiCard('file', 'var(--purple)', fmtMoney(unpaidInv), 'Pending Invoice', DB.invoices.filter(i=>i.status!=='Paid').length+' unpaid','down')}
+      ${kpiCard('wallet','var(--green)', fmtMoney(totalRevenue), 'Total Income','This month','up','dashboard')}
+      ${kpiCard('wallet','var(--red)', fmtMoney(totalExpense), 'Total Expense','This month','down','expenses')}
+      ${kpiCard('chart', profit>=0?'var(--blue)':'var(--red)', fmtMoney(profit), 'Profit/Loss','This month', profit>=0?'up':'down','profitloss')}
+      ${kpiCard('tool', 'var(--orange)', activeRep, 'Repair (In Queue)', activeRep>0?activeRep+' in queue':'All clear','up','orders')}
+      ${kpiCard('alert', 'var(--red)', lowStock, 'Low Stock', lowStock>0?'Needs reorder':'Stock healthy', lowStock>0?'down':'up','lowstock')}
+      ${kpiCard('file', 'var(--purple)', fmtMoney(unpaidInv), 'Pending Invoice', DB.invoices.filter(i=>i.status!=='Paid').length+' unpaid','down','orders')}
     </div>
     <div class="grid-2">
       <div class="card">
@@ -1608,8 +1622,9 @@ RENDERERS.dashboard = function(c){
   drawRevenueChart();
   drawStatusDonut();
 };
-function kpiCard(iconName, color, value, label, trend, dir){
-  return `<div class="kpi-card">
+function kpiCard(iconName, color, value, label, trend, dir, targetHash){
+  const clickAttrs = targetHash ? ` class="kpi-card clickable" role="button" tabindex="0" onclick="location.hash='#${targetHash}'" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();location.hash='#${targetHash}';}"` : ` class="kpi-card"`;
+  return `<div${clickAttrs}>
     <div class="top"><div class="kpi-icon" style="background:${color}">${icon(iconName)}</div>
     <div class="kpi-trend ${dir}">${icon(dir==='up'?'up':'down')} ${trend}</div></div>
     <div class="kpi-value">${value}</div><div class="kpi-label">${label}</div></div>`;
