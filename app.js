@@ -1541,9 +1541,10 @@ function statusBadge(status){
 const RENDERERS = {};
 
 RENDERERS.dashboard = function(c){
-  const totalRevenue = DB.invoices.filter(i=>i.status==='Paid').reduce((s,i)=>s+Number(i.amount),0)
-    + DB.orders.filter(o=>o.status==='Completed').reduce((s,o)=>s+Number(o.total),0)
-    + DB.sales.filter(s=>s.status==='Paid').reduce((s,sale)=>s+Number(sale.total),0);
+  const repairIncome = DB.orders.filter(o=>o.status!=='Cancelled').reduce((s,o)=>s+Number(o.advance||0),0);
+  const salesIncome = DB.sales.reduce((s,sale)=>s+Number(sale.total||0),0);
+  const standaloneInvoiceIncome = DB.invoices.filter(i=> i.status==='Paid' && !DB.orders.some(o=>o.id===i.ref) && !DB.sales.some(s=>s.id===i.ref)).reduce((s,i)=>s+Number(i.amount||0),0);
+  const totalRevenue = repairIncome + salesIncome + standaloneInvoiceIncome;
   const totalExpense = DB.expenses.reduce((s,e)=>s+Number(e.amount),0);
   const plRows = DB.profitLoss.filter(r=>monthKey(r.date)===currentMonthKey());
   const profit = plRows.reduce((s,r)=> s + (r.profit!==undefined && r.profit!==null && r.profit!=='' ? Number(r.profit) : (Number(r.paymentReceived||0)-Number(r.expense||0))), 0);
