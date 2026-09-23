@@ -235,6 +235,35 @@ function emptyDB(){
 let DB = emptyDB();
 function save(){ safeStorage.setItem(STORE_KEY, JSON.stringify(DB)); }
 
+function isAutoOrderId(id){ return typeof id === 'string' && /^REP-/.test(id); }
+function isAutoSaleId(id){ return typeof id === 'string' && /^SAL-/.test(id); }
+function pruneOrphanedLinkedRecords(){
+  // Self-heals stale/orphaned records left behind by an old app version (or an interrupted
+  // delete) — e.g. an auto-generated Invoice or Profit/Loss entry whose Repair job / Sale was
+  // deleted without its linked records being cleaned up. Keeps the dashboard totals accurate.
+  let changed = false;
+  const orderIds = new Set(DB.orders.map(o=>o.id));
+  const saleIds = new Set(DB.sales.map(s=>s.id));
+  for(let i=DB.invoices.length-1;i>=0;i--){
+    const inv = DB.invoices[i];
+    const ref = inv.ref;
+    if((isAutoOrderId(ref) && !orderIds.has(ref)) || (isAutoSaleId(ref) && !saleIds.has(ref))){
+      DB.invoices.splice(i,1);
+      Api.invoices.remove(inv.id).catch(()=>{});
+      changed = true;
+    }
+  }
+  for(let i=DB.profitLoss.length-1;i>=0;i--){
+    const pl = DB.profitLoss[i];
+    if(isAutoOrderId(pl.repairId) && !orderIds.has(pl.repairId)){
+      DB.profitLoss.splice(i,1);
+      Api.profitLoss.remove(pl.id).catch(()=>{});
+      changed = true;
+    }
+  }
+  if(changed) save();
+}
+
 async function fetchAllData(){
   const [categories, products, customers, suppliers, purchases, shops, shopSales,
          sales, orders, invoices, expenses, roles, requests, users, listsObj, settingsObj, history, profitLoss] = await Promise.all([
@@ -254,6 +283,7 @@ async function fetchAllData(){
   const cached = Api.Auth.cachedUser();
   DB.settings.currentUser = cached ? cached.id : null;
   DB.schemaVersion = SEED_VERSION;
+  pruneOrphanedLinkedRecords();
   save();
 }
 
@@ -2840,6 +2870,34 @@ RENDERERS.orders = function(c){
     wideForm:true,
     onCreateExtra:()=>({trackingId: genTrackingId('REP')}),
     onSaved: async (order, isEdit, prevSnapshot)=>{ await ensureInvoiceForOrder(order); await reconcilePartsStock(order, prevSnapshot?prevSnapshot.status:null); await ensureProfitLossForOrder(order, isEdit); },
+    onDelete: async (order)=>{
+      // restore any parts stock that had been deducted when this job was marked Completed
+      if(order._stockDeducted && (order._deductedParts||[]).length){
+        const touched = new Set();
+        order._deductedParts.forEach(p=>{
+          const prod = DB.products.find(x=>x.id===p.product);
+          if(prod){ prod.stock = Number(prod.stock) + Number(p.qty); touched.add(prod.id); }
+        });
+        await Promise.all(Array.from(touched).map(id=>{
+          const prod = DB.products.find(p=>p.id===id);
+          return Api.products.update(id, {stock: prod.stock}).catch(()=>{});
+        }));
+      }
+      // remove the linked Profit/Loss ledger entry so Total Income / Expense / Profit stay in sync
+      const plIdx = DB.profitLoss.findIndex(p=>p.repairId===order.id);
+      if(plIdx>-1){
+        const pl = DB.profitLoss[plIdx];
+        try{ await Api.profitLoss.remove(pl.id); }catch(e){}
+        DB.profitLoss.splice(plIdx,1);
+      }
+      // remove the auto-generated invoice for this repair job
+      const invIdx = DB.invoices.findIndex(i=>i.ref===order.id);
+      if(invIdx>-1){
+        const inv = DB.invoices[invIdx];
+        try{ await Api.invoices.remove(inv.id); }catch(e){}
+        DB.invoices.splice(invIdx,1);
+      }
+    },
   });
 };
 function trackingCell(code){
